@@ -89,7 +89,7 @@ Example with CSV export:
 python solution.py \
   --query "Find logistics technology companies in Europe" \
   --retrieval-k 25 \
-  --output-csv outputs/results.csv
+  --output-csv results.csv
 ```
 
 The script prints the final ranked companies in the terminal and, if `--output-csv` is provided, also saves them to a CSV file.
