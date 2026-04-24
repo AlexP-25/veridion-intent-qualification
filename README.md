@@ -46,3 +46,52 @@ The system follows a multi-stage pipeline:
    - exclusion penalty
 
 ---
+
+## Setup & Usage
+
+Install the dependencies from `requirements.txt`:
+
+```bash
+pip install -r requirements.txt
+```
+
+The solution is executed through `solution.py`:
+
+```bash
+python solution.py \
+  --query "Find B2B SaaS companies in Germany selling cybersecurity solutions"
+```
+
+If the Gemini API key is not passed directly, the script reads it from the `GEMINI_API_KEY` environment variable:
+
+```bash
+export GEMINI_API_KEY="your_api_key_here"
+```
+
+You can also provide it explicitly:
+
+```bash
+python solution.py \
+  --query "Find private fintech companies in France" \
+  --api-key "your_api_key_here"
+```
+
+### Arguments
+
+- `--query` — required; natural-language company search query.
+- `--retrieval-k` — optional; number of candidates retrieved by BM25 and semantic search before filtering. Default: `10`.
+- `--api-key` — optional; Gemini API key. If omitted, `GEMINI_API_KEY` is used.
+- `--output-csv` — optional; path where the final ranked results are saved as CSV.
+
+Example with CSV export:
+
+```bash
+python solution.py \
+  --query "Find logistics technology companies in Europe" \
+  --retrieval-k 25 \
+  --output-csv outputs/results.csv
+```
+
+The script prints the final ranked companies in the terminal and, if `--output-csv` is provided, also saves them to a CSV file.
+
+The output includes company name, website, country code, final score, retrieval score, founding year, employee count, revenue, public/private status, and description when available.
