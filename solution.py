@@ -798,11 +798,19 @@ def print_final_results(output_table):
     print(output_table.to_string())
 
 
-def export_results_to_csv(output_table, output_csv_path):
-    if output_csv_path is None:
+def save_results_csv(output_table, output_csv_path):
+    if not output_csv_path:
         return
 
+    output_csv_path = Path(output_csv_path)
+
+    if output_csv_path.suffix.lower() != ".csv":
+        raise ValueError(f"Output path must be a .csv file: {output_csv_path}")
+
+    output_csv_path.parent.mkdir(parents=True, exist_ok=True)
+
     output_table.to_csv(output_csv_path, index=False)
+
     print(f"\nSaved results to: {output_csv_path}")
 
 
@@ -850,7 +858,7 @@ def main():
     # Output
     output_table = build_output_table(candidate_table)
     print_final_results(output_table)
-    export_results_to_csv(output_table, output_csv_path)
+    save_results_csv(output_table, output_csv_path)
 
 
 if __name__ == "__main__":
