@@ -2,7 +2,8 @@ pandas==3.0.2
 pydantic==2.13.2
 numpy==2.4.4
 bm25s==0.3.4
-faiss-cpu==1.14.1
+faiss-cpu==1.13.2
 sentence-transformers==5.4.1
 transformers==5.5.4
 google-genai==1.73.1
+pyarrow==24.0.0
