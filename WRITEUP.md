@@ -290,3 +290,110 @@ Companies that could supply packaging materials for a direct-to-consumer cosmeti
 ![Pipeline Diagram](images/second_query_csv.png)
 
 For each example, I inspected the parsed query plan, the retrieved candidates, the hard filtering behavior, and the final ranked results. The goal was not to claim that the heuristic scoring is perfect, but to check whether the pipeline behaves in a reasonable and explainable way.
+
+## Tradeoffs
+
+The biggest decision was not to use the LLM for every company. This would probably give better answers in some difficult cases, because the model could look at each company and reason about it directly. But I think it would make the solution too expensive and too slow for this problem. It would also make the runtime depend on how many companies I send to the LLM. So I preferred to use the LLM only once, on the query. After that, the rest of the pipeline uses cheaper methods.
+
+This means that I optimized more for:
+
+- low and predictable cost;
+- reasonable latency;
+- scalability;
+- results that I can debug;
+- a solution that is simple enough to explain.
+
+Another tradeoff is the final ranking. I did not train a ranking model, because I did not have labeled examples of good and bad matches. Instead, I used a heuristic score based on the signals I already had: retrieval score, industry match, business model match, offering match, target market match, and exclusion terms.
+
+This is not as strong as a trained reranker, but it is transparent. If a company is ranked too high or too low, I can inspect which part of the score caused that.
+
+I also made the hard filters strict. For example, if the query asks for public companies, private companies are removed. If the query asks for companies with more than 1,000 employees, companies below that threshold are removed.
+
+This improves precision, but it can also remove relevant companies when the data is incomplete or missing. I accepted this tradeoff because explicit constraints from the user should usually be respected.
+
+The last important tradeoff is using both BM25 and semantic search. This makes the retrieval step a bit more complex than using only one method, but I think it is worth it. BM25 is useful when the query contains exact terms that matter. Semantic search is useful when the same idea is expressed with different words.
+
+## Scaling
+
+The current version is designed around an offline indexing step and a lightweight query-time pipeline.
+
+If the system needed to handle 100,000 companies per query instead of 500, I would keep the same high-level architecture, but I would make the retrieval and filtering components more production-oriented.
+
+The most important point is that the expensive work should remain offline:
+
+- cleaning and parsing company records;
+- building `company_text`;
+- tokenizing the corpus;
+- computing company embeddings;
+- building the BM25 and FAISS indexes.
+
+At query time, the system should only:
+
+1. parse the query once with the LLM;
+2. run BM25 retrieval;
+3. run FAISS semantic retrieval;
+4. merge a limited number of candidates;
+5. apply hard filters and ranking only on that candidate set.
+
+This means the system should not score all 100,000 companies in detail. It should retrieve a top-K candidate set first, for example a few hundred or a few thousand companies, and then apply the more expensive ranking logic only to that smaller set.
+
+For FAISS, scaling to 100,000 companies is straightforward. Exact search may still be acceptable at this size, but for larger datasets I would use an approximate index such as IVF or HNSW.
+
+For BM25, I would avoid rebuilding the index at runtime and keep the index precomputed. If the dataset becomes much larger or needs frequent updates, I would consider moving lexical retrieval to a search engine such as Elasticsearch, OpenSearch, or Vespa.
+
+I would also add caching. Many users may ask similar queries, and the LLM parsing step is the most expensive online component. Caching parsed query plans and maybe retrieval results would reduce both latency and cost.
+
+The main architectural idea would stay the same: use the LLM once to understand the query, then use scalable retrieval and deterministic ranking components for the company database.
+
+## Error Analysis
+
+One behavior I noticed during testing is that changing `--retrieval-k` can change not only the number of final results, but also the relative order of companies that appear in both runs.
+
+For example, if I run the same query with a smaller `--retrieval-k`, I may get companies A, B, and C in one order. If I run the same query again with a larger `--retrieval-k`, companies A, B, and C may still appear, but their order can change.
+
+This happens because the retrieval scores are normalized inside the candidate pool produced for that specific run. When `--retrieval-k` changes, the candidate pool changes. This also changes the minimum and maximum BM25 and semantic scores used for normalization. As a result, even a company that appears in both runs can receive a different normalized retrieval score. Since `retrieval_score` is part of the final score, the final ranking of the same companies can also change.
+
+This is an important limitation of the current implementation. Ideally, if two companies appear in both candidate sets, their relative order should be stable unless new evidence changes the scoring. In my current implementation, part of the score depends on the composition of the candidate pool, so the ranking is sensitive to `--retrieval-k`.
+
+This does not mean that the whole pipeline is wrong, but it means that the score fusion method is not fully stable. The system is currently using local min-max normalization, which is simple, but can make scores depend on the retrieved set.
+
+A better version would use a more stable fusion method. For example, I could use rank-based fusion such as Reciprocal Rank Fusion, or calibrate BM25 and semantic scores independently instead of normalizing them only within the current candidate pool.
+
+![Pipeline Diagram](images/retrieval10.png)
+![Pipeline Diagram](images/retrieval25.png)
+
+Looking at the two screenshots, the first result remains stable: `Lesopack Cos Packaging` is ranked first for both `--retrieval-k=10` and `--retrieval-k=25`.
+
+However, several companies that appear in both runs change their relative order. For example, `Standard Mold` is ranked 2nd with `k=10`, but drops to 6th with `k=25`. `Sunshine Packaging` moves from 3rd to 2nd, and `Shenzhen Itop Cosmetic Packaging` moves from 4th to 3rd. A more visible change is `SZ SJ Packaging`, which moves from 8th to 4th, while `Aurelo Packaging Co` moves from 7th to 5th. At the same time, `Shanghai Bochen Cosmetic Packaging` drops from 5th to 8th.
+
+So the problem is not only that a larger `retrieval-k` returns more candidates. The important observation is that the same companies can remain in the result set, but their order can still change.
+
+## Failure Modes
+
+There are several cases where this system can produce confident but incorrect results.
+
+The first failure mode is incorrect query parsing. Since the LLM is used at the beginning of the pipeline, a wrong `QueryPlan` can affect all later stages. For example, if the LLM extracts the wrong industry terms, forgets an exclusion term, or turns a vague preference into a hard filter, the rest of the pipeline will follow that incorrect interpretation.
+
+The second failure mode is retrieval recall. If BM25 and semantic search do not retrieve a relevant company in the initial candidate set, the later filtering and ranking stages cannot recover it. This is especially important when `--retrieval-k` is too small.
+
+The third failure mode comes from strict hard filters. If the user asks for public companies or companies above a certain employee count, the system removes candidates that do not satisfy those constraints. This is correct when the data is complete, but it can remove good companies when the relevant field is missing or incorrect in the database.
+
+Another failure mode is semantic confusion. A company can be semantically close to the query without playing the right business role. For example, a cosmetics company may be close to a query about packaging suppliers for cosmetics brands, but it is not necessarily a packaging supplier. The scoring step tries to reduce this problem, but it does not eliminate it completely.
+
+The heuristic ranking can also fail. The final score is based on manually chosen weights, so there will be cases where the system gives too much importance to one signal and not enough to another. Without labeled training data, these weights are reasonable assumptions, not optimized parameters.
+
+Finally, the ranking can be sensitive to the retrieval pool size. During testing, I noticed that changing `--retrieval-k` can change both the number of final companies and the order of companies that already appeared before. This happens because retrieval scores are normalized within the current candidate set. A more stable score fusion method would reduce this issue.
+
+## What I Would Monitor
+
+In production, I would monitor several things.
+
+First, I would monitor the parsed `QueryPlan`, especially hard filters. If the LLM often extracts wrong filters, the system can fail before retrieval even starts.
+
+Second, I would monitor retrieval recall. If users frequently click or accept companies that were ranked very low or missing from the first candidate set, then the retrieval stage is too weak or `--retrieval-k` is too small.
+
+Third, I would monitor how many candidates are removed by hard filters. If too many candidates are removed because of missing values, then the filtering logic may be too strict for incomplete data.
+
+Fourth, I would monitor score distributions and ranking stability. If small changes in `--retrieval-k` or query wording cause large changes in ranking, then the scoring and score normalization need improvement.
+
+Finally, I would collect user feedback on returned companies. This would make it possible to tune the scoring weights or eventually train a reranker.
